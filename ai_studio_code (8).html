@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI EXECUTIVE COMMANDER - ULTRA FAST</title>
+  <style>
+    :root { --bg: #020617; --panel: #0f172a; --accent: #38bdf8; --red: #ef4444; }
+    body { margin: 0; background: var(--bg); color: #f1f5f9; font-family: sans-serif; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+    header { padding: 8px 16px; background: var(--panel); border-bottom: 1px solid #334155; display: flex; justify-content: space-between; align-items: center; }
+    .logo { font-weight: bold; color: var(--accent); letter-spacing: 1px; font-size: 0.95rem; }
+    
+    main { flex: 1; display: flex; overflow: hidden; }
+    #chatContainer { flex: 1; display: flex; flex-direction: column; background: rgba(0,0,0,0.4); position: relative; }
+    #chatDisplay { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+    
+    .msg { max-width: 85%; padding: 10px 14px; border-radius: 12px; line-height: 1.5; font-size: 0.95rem; }
+    .msg-user { align-self: flex-end; background: #0ea5e9; color: #000; font-weight: bold; }
+    .msg-ai { align-self: flex-start; background: #1e293b; border: 1px solid #334155; }
+    .msg-system { align-self: center; background: #334155; color: #cbd5e1; font-size: 0.75rem; padding: 4px 10px; border-radius: 6px; }
+    .msg-error { align-self: center; background: #450a0a; color: #f87171; border: 1px solid #f87171; font-size: 0.8rem; width: 95%; padding: 10px; border-radius: 8px; }
+
+    #visionContainer { width: 280px; background: #000; padding: 8px; display: flex; flex-direction: column; gap: 8px; border-left: 1px solid #334155; }
+    video, img { width: 100%; border-radius: 6px; border: 1px solid #475569; background: #000; }
+    .vid-title { font-size: 0.65rem; color: #94a3b8; }
+
+    #inputForm { padding: 10px 16px; background: var(--panel); border-top: 1px solid #334155; display: flex; gap: 8px; align-items: center; }
+    .btn { width: 48px; height: 48px; border-radius: 50%; border: none; background: #334155; color: white; cursor: pointer; font-size: 1.3rem; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+    .btn-active { background: var(--accent); color: #000; }
+    .listening { background: var(--red); animation: pulse 1s infinite; color: white; }
+    @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.1); } 100% { transform: scale(1); } }
+    
+    #textInput { flex: 1; background: #020617; border: 1px solid #475569; color: white; padding: 10px 16px; border-radius: 25px; font-size: 0.95rem; outline: none; }
+    #textInput:focus { border-color: var(--accent); }
+    #statusLine { font-size: 0.7rem; color: #94a3b8; text-align: center; padding: 3px; background: #0b1329; display: flex; justify-content: space-around; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">AI COMMANDER</div>
+  <div id="activeModelBadge" style="font-size: 0.75rem; color: #38bdf8; font-weight: bold;">⚡ 爆速モード</div>
+</header>
+
+<main>
+  <div id="chatContainer">
+    <div id="chatDisplay">
+      <div class="msg msg-system">超軽量通信＆マイク常駐仕様で起動。画像も一瞬で送信されます。</div>
+    </div>
+    <div id="statusLine">
+      <span id="micStatus">マイク: 待機</span>
+      <span id="aiStatus">AI: 即応スタンバイ</span>
+    </div>
+    
+    <form id="inputForm" onsubmit="handleFormSubmit(event)">
+      <button type="button" id="camBtn" class="btn" title="カメラ">📷</button>
+      <button type="button" id="screenBtn" class="btn" title="画面共有">🖥️</button>
+      <input type="text" id="textInput" placeholder="入力してEnter、またはマイク..." autocomplete="off">
+      <button type="button" id="micBtn" class="btn" title="音声入力">🎤</button>
+      <button type="submit" id="sendBtn" class="btn" style="background:var(--accent); color:#000;">➤</button>
+    </form>
+  </div>
+
+  <div id="visionContainer">
+    <div class="vid-title">映像プレビュー</div>
+    <video id="mainVideo" autoplay playsinline muted></video>
+    <div class="vid-title">直前の解析フレーム（軽量化済）</div>
+    <img id="lastFrame">
+    <canvas id="capCanvas" style="display:none;"></canvas>
+  </div>
+</main>
+
+<script>
+  const API_KEY = "AQ.Ab8RN6K3g4_EtTfZLeAvQcYgEtEIH4L83ugV9GfqWg6XXKHdhQ";
+  
+  // 待ち時間ゼロを目指し、応答速度が最速のモデルを優先配置
+  const FAST_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-3.8-flash"
+  ];
+
+  let chatHistory = [];
+  let activeStream = null;
+  let micKeepAliveStream = null; // マイク接続維持用
+  let isAuto = false;
+
+  const chatDisplay = document.getElementById('chatDisplay');
+  const textInput = document.getElementById('textInput');
+  const micBtn = document.getElementById('micBtn');
+  const micStatus = document.getElementById('micStatus');
+  const aiStatus = document.getElementById('aiStatus');
+  const activeModelBadge = document.getElementById('activeModelBadge');
+  const mainVideo = document.getElementById('mainVideo');
+
+  function handleFormSubmit(e) {
+    if (e) e.preventDefault();
+    processAction();
+  }
+
+  // --- 音声認識（常駐セッション化） ---
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let recognition = null;
+
+  if (SpeechRecognition) {
+    recognition = new SpeechRecognition();
+    recognition.lang = 'ja-JP';
+    recognition.interimResults = false;
+    recognition.continuous = false;
+
+    recognition.onstart = () => {
+      micBtn.classList.add('listening');
+      micStatus.innerText = "マイク: 🔴 聴取中";
+      micStatus.style.color = "#f87171";
+    };
+
+    recognition.onend = () => {
+      micBtn.classList.remove('listening');
+      micStatus.innerText = "マイク: 待機";
+      micStatus.style.color = "#94a3b8";
+      if (isAuto && !window.speechSynthesis.speaking) {
+        setTimeout(() => { try { recognition.start(); } catch(e){} }, 300);
+      }
+    };
+
+    recognition.onerror = (e) => {
+      micStatus.innerText = "マイク: " + e.error;
+    };
+
+    recognition.onresult = (e) => {
+      const text = e.results[0][0].transcript;
+      textInput.value = text;
+      processAction();
+    };
+  }
+
+  // マイクボタンを押した瞬間に、裏でAudioStreamを常駐させて許可の再要求を阻止
+  micBtn.onclick = async () => {
+    if (!recognition) return alert("Chromeをご使用ください");
+    
+    // 初回にマイクストリームを掴んで維持する
+    if (!micKeepAliveStream) {
+      try {
+        micKeepAliveStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch(err) {
+        console.warn("マイク事前保持スキップ:", err);
+      }
+    }
+
+    isAuto = !isAuto;
+    if (isAuto) {
+      try { recognition.start(); } catch(e){}
+    } else {
+      recognition.stop();
+      window.speechSynthesis.cancel();
+    }
+  };
+
+  // --- 音声読み上げ ---
+  function speak(text) {
+    window.speechSynthesis.cancel();
+    const cleanText = text.replace(/[*#]/g, '').replace(/【.*?】/g, '');
+    const uttr = new SpeechSynthesisUtterance(cleanText);
+    uttr.lang = 'ja-JP';
+    uttr.rate = 1.3; // テンポよく再生
+    uttr.onend = () => {
+      if (isAuto) setTimeout(() => { try { recognition.start(); } catch(e){} }, 300);
+    };
+    window.speechSynthesis.speak(uttr);
+  }
+
+  // --- カメラ・画面共有 ---
+  document.getElementById('camBtn').onclick = async () => {
+    stopStream();
+    try {
+      activeStream = await navigator.mediaDevices.getUserMedia({ 
+        video: { facingMode: "environment", width: { ideal: 1280 } } 
+      });
+      mainVideo.srcObject = activeStream;
+      document.getElementById('camBtn').classList.add('btn-active');
+    } catch (e) { alert("カメラ許可エラー"); }
+  };
+
+  document.getElementById('screenBtn').onclick = async () => {
+    stopStream();
+    try {
+      activeStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      mainVideo.srcObject = activeStream;
+      document.getElementById('screenBtn').classList.add('btn-active');
+    } catch (e) { alert("画面共有エラー"); }
+  };
+
+  function stopStream() {
+    if (activeStream) activeStream.getTracks().forEach(t => t.stop());
+    document.querySelectorAll('.btn').forEach(b => b.classList.remove('btn-active'));
+  }
+
+  // --- 高速画像リサイズ・圧縮処理（超速の要） ---
+  function getCompressedFrame() {
+    if (!activeStream || mainVideo.videoWidth === 0) return null;
+    const canvas = document.getElementById('capCanvas');
+    
+    // 最大幅を640pxに縮小（AIには十分な解像度で通信量を激減）
+    const MAX_DIM = 640;
+    let w = mainVideo.videoWidth;
+    let h = mainVideo.videoHeight;
+    if (w > h && w > MAX_DIM) {
+      h = Math.round((h * MAX_DIM) / w);
+      w = MAX_DIM;
+    } else if (h > MAX_DIM) {
+      w = Math.round((w * MAX_DIM) / h);
+      h = MAX_DIM;
+    }
+
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(mainVideo, 0, 0, w, h);
+
+    // JPEG品質0.5で圧縮（画質を保ちつつファイルサイズを数MBから数十KBへ）
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.5);
+    document.getElementById('lastFrame').src = dataUrl;
+    return dataUrl.split(',')[1];
+  }
+
+  // --- メイン解析処理（タイムアウト制限＆即時フォールバック） ---
+  async function processAction() {
+    const prompt = textInput.value.trim();
+    const base64Img = getCompressedFrame();
+
+    if (!prompt && !base64Img) return;
+    addMessage('user', prompt || "画像を解析中...");
+    textInput.value = "";
+    aiStatus.innerText = "AI: ⚡ 爆速解析中...";
+
+    const payload = {
+      contents: chatHistory.concat([{
+        role: "user",
+        parts: [
+          { text: prompt || "画像の内容を物販のプロとして要点だけ短く日本語で即答せよ。" },
+          ...(base64Img ? [{ inlineData: { mimeType: "image/jpeg", data: base64Img } }] : [])
+        ]
+      }]).slice(-4), // 履歴を絞ってさらに高速化
+      systemInstruction: { parts: [{ text: "あなたは物販のプロ。短く要点だけを声で聞き取りやすく即答してください。" }] }
+    };
+
+    let responseData = null;
+    let usedModel = null;
+
+    // 各モデルに3.5秒の制限時間を設け、もたついたら即座に次のモデルへスキップ
+    for (const modelName of FAST_MODELS) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3500);
+
+      try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': API_KEY
+          },
+          body: JSON.stringify(payload),
+          signal: controller.signal
+        });
+
+        clearTimeout(timeoutId);
+        const data = await res.json();
+
+        if (data.candidates && data.candidates[0].content) {
+          responseData = data;
+          usedModel = modelName;
+          break; // 最速で成功した時点で即終了
+        }
+      } catch (err) {
+        clearTimeout(timeoutId);
+        console.warn(`${modelName} スキップ:`, err.name === 'AbortError' ? 'タイムアウト' : err.message);
+      }
+    }
+
+    if (responseData && responseData.candidates[0].content.parts[0].text) {
+      const aiText = responseData.candidates[0].content.parts[0].text;
+      activeModelBadge.innerText = `⚡ ${usedModel.replace('gemini-', '')} 応答`;
+      aiStatus.innerText = "AI: 完了";
+      addMessage('ai', aiText);
+      chatHistory.push({ role: "user", parts: [{ text: prompt || "解析依頼" }] });
+      chatHistory.push({ role: "model", parts: [{ text: aiText }] });
+      speak(aiText);
+    } else {
+      aiStatus.innerText = "AI: 再試行待ち";
+      addMessage('error', "通信が混雑しています。もう一度話しかけてください。");
+      if (isAuto) setTimeout(() => { try { recognition.start(); } catch(e){} }, 2000);
+    }
+  }
+
+  function addMessage(role, text) {
+    const div = document.createElement('div');
+    div.className = `msg msg-${role}`;
+    div.innerText = text;
+    chatDisplay.appendChild(div);
+    chatDisplay.scrollTop = chatDisplay.scrollHeight;
+  }
+</script>
+</body>
+</html>
